@@ -9,16 +9,13 @@ print("OpenCV version:", cv2.__version__)
 print("Dlib version:", dlib.__version__)
 print("Starting detector... 'q' to quit.")
 
-# 1. [수정] 졸음 판단 기준 상수 정의
+# 1. 졸음 판단 기준 상수 정의
 # -----------------------------------------------------------------
-# EAR 임계값 (이 값보다 낮으면 "눈 감음"으로 간주)
 EAR_THRESHOLD = 0.2
-# EAR 임계값 미만으로 지속되어야 하는 최소 연속 프레임 수 (FPS에 따라 조절)
-# 예: FPS가 20~25 정도라면, 40 프레임은 약 2초에 해당함
 EAR_CONSEC_FRAMES = 40 
 # -----------------------------------------------------------------
 
-# 2. [수정] 눈 감은 프레임 카운터 및 졸음 상태 플래그
+# 2. 눈 감은 프레임 카운터 및 졸음 상태 플래그
 COUNTER = 0
 DROWSY = False # 졸음 상태 여부
 
@@ -55,7 +52,7 @@ while True:
     # 7. 얼굴 탐지
     faces = detector(gray, 0)
     
-    # [수정] 얼굴이 감지되지 않았을 때를 대비해 DROWSY 플래그 초기화
+    # 얼굴이 감지되지 않았을 때를 대비해 DROWSY 플래그 초기화
     if len(faces) == 0:
         DROWSY = False
         COUNTER = 0
@@ -72,4 +69,50 @@ while True:
 
         # 9. EAR 계산
         left_eye_pts = shape_np[LEFT_EYE_INDICES]
-        right_eye_pts = shape_np
+        right_eye_pts = shape_np[RIGHT_EYE_INDICES]
+
+        left_ear = utils.get_eye_aspect_ratio(left_eye_pts)
+        right_ear = utils.get_eye_aspect_ratio(right_eye_pts)
+        avg_ear = (left_ear + right_ear) / 2.0
+
+        # 눈 윤곽선 그리기
+        cv2.drawContours(frame_bgr, [cv2.convexHull(left_eye_pts)], -1, (0, 255, 0), 1)
+        cv2.drawContours(frame_bgr, [cv2.convexHull(right_eye_pts)], -1, (0, 255, 0), 1)
+
+        # 10. 졸음 판단 로직
+        if avg_ear < EAR_THRESHOLD:
+            COUNTER += 1
+            if COUNTER >= EAR_CONSEC_FRAMES:
+                DROWSY = True 
+                cv2.putText(frame_bgr, "!!! DROWSINESS ALERT !!!", (10, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            COUNTER = 0
+            DROWSY = False
+
+        # EAR 값 화면에 표시
+        cv2.putText(frame_bgr, f"EAR: {avg_ear:.3f}", (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        # 눈 감은 프레임 카운트 표시 (디버깅용)
+        cv2.putText(frame_bgr, f"Count: {COUNTER}", (x + w - 100, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+
+    # 11. FPS 계산 및 표시
+    current_time = time.time()
+    fps = 1 / (current_time - prev_time)
+    prev_time = current_time
+    cv2.putText(frame_bgr, f"FPS: {fps:.2f}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    # 12. 화면에 결과 표시
+    cv2.imshow("Drowsiness Detector", frame_bgr)
+
+    # 'q' 키를 누르면 종료
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# 13. 리소스 정리 (루프가 끝나면 실행됨)
+cv2.destroyAllWindows()
+picam2.stop()
+print("Detector 종료.")
