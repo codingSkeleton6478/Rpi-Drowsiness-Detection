@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 
 def euclidean_dist(ptA, ptB):
     # 두 점 사이의 유클리드 거리를 계산합니다.
@@ -21,3 +22,18 @@ def get_eye_aspect_ratio(eye_points):
 
     # 4. 계산된 EAR 값을 반환합니다.
     return ear
+
+def adjust_gamma(image, gamma=1.0):
+    """
+    이미지의 명암(Gamma)을 조절하는 함수
+    gamma > 1.0: 이미지가 밝아짐 (어두운 곳/역광 해결)
+    gamma < 1.0: 이미지가 어두워짐
+    """
+    invGamma = 1.0 / gamma
+    
+    # 룩업 테이블(Lookup Table) 생성 - 속도 최적화
+    table = np.array([((i / 255.0) ** invGamma) * 255
+        for i in np.arange(0, 256)]).astype("uint8")
+
+    # 테이블을 이용해 이미지 전체 변환 (매우 빠름)
+    return cv2.LUT(image, table)

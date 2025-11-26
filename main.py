@@ -1,22 +1,51 @@
 import cv2
 import time
 import threading
+import numpy as np
+import pygame
+import os
+from dotenv import load_dotenv
 from picamera2 import Picamera2
 from src.detector import DriverMonitor
-from src.chatbot import DriverChatbot
+import src.utils as utils 
+
+# from src.chatbot import DriverChatbot 
 
 # ==========================================
-# API 키 설정
-OPENAI_API_KEY = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# 비프음 생성기
 # ==========================================
+class BeepAlert:
+    def __init__(self):
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=1)
+        except Exception as e:
+            print(f"Audio Init Error: {e}")
+        
+        duration = 0.5 
+        frequency = 880 
+        sample_rate = 44100
+        
+        t = np.linspace(0, duration, int(sample_rate * duration), False)
+        tone = np.sin(frequency * t * 2 * np.pi)
+        
+        audio = (tone * 32767).astype(np.int16)
+        self.sound = pygame.sndarray.make_sound(audio)
+
+    def play(self):
+        if pygame.mixer.get_init() and not pygame.mixer.get_busy():
+            print("🔊 [경고] 비프음 출력!")
+            self.sound.play()
+
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def main():
-    # 1. 객체 생성
-    print("Initializing System...")
+    print("Initializing System (Noise Reduction Mode)...")
+    
     monitor = DriverMonitor()
-    chatbot = DriverChatbot(OPENAI_API_KEY)
+    # chatbot = DriverChatbot(OPENAI_API_KEY)
+    beeper = BeepAlert()
 
-    # 2. 카메라 설정 (PiCamera2)
     print("Starting Camera...")
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(main={"size": (640, 480)})
@@ -24,31 +53,35 @@ def main():
     picam2.start()
 
     prev_time = 0
-    print("Running... Press 'q' to quit.")
+    print("Running... Press 'q' to quit, 'r' to recalibrate.")
 
     try:
         while True:
-            # 3. 프레임 캡처
             frame = picam2.capture_array()
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            # ---------------------------------------------------------
+            # [핵심 수정] 노이즈 제거 (Gaussian Blur)
+            # ---------------------------------------------------------
+            # (5, 5)는 뭉개는 강도입니다. 노이즈가 심하면 (7, 7)로 올려보세요.
+            frame_bgr = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
+            
+            # 부드러워진 이미지를 흑백으로 변환 -> Dlib이 훨씬 좋아합니다.
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
             
-            # 4. 얼굴 감지
-            faces = monitor.detector(gray, 0)
-            
             if monitor.is_calibrating:
-                # 초기 캘리브레이션 모드
-                monitor.calibrate(frame_bgr, faces, gray)
-            else:
-                # 감시 모드 실행 -> 현재 상태(status) 받아옴
-                status = monitor.process_frame(frame_bgr, faces, gray)
+                monitor.calibrate(frame_bgr, gray)
                 
-                # 5. 졸음 발생 시 챗봇 실행 (이미 말하고 있으면 실행 안 함)
-                if status == "SLEEP" and not chatbot.is_speaking:
-                    print("⚠️ Drowsiness Detected! Activating Chatbot...")
-                    # 백그라운드 스레드로 실행 (화면 멈춤 방지)
-                    t = threading.Thread(target=chatbot.wake_up_driver)
-                    t.start()
+            else:
+                status = monitor.process_frame(frame_bgr, gray)
+                
+                if status in ["SLEEP", "YAWN", "HEAD_DOWN"]:
+                    print(f"⚠️ 위험 감지: {status}!")
+                    beeper.play()
+                    
+                    # if not chatbot.is_speaking:
+                    #     t = threading.Thread(target=chatbot.wake_up_driver)
+                    #     t.start()
 
             # FPS 표시
             curr_time = time.time()
@@ -56,19 +89,25 @@ def main():
             prev_time = curr_time
             cv2.putText(frame_bgr, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-            # 6. 화면 출력
+            # 화면 출력 (약간 뽀샤시해진 화면이 보일 겁니다)
             cv2.imshow("Driver Monitor", frame_bgr)
             
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
                 break
+            elif key == ord('r'):
+                print("🔄 리셋: 다시 캘리브레이션 합니다.")
+                monitor.is_calibrating = True
+                monitor.calib_ear_list = []
 
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         
     finally:
         picam2.stop()
         cv2.destroyAllWindows()
-        print("System Stopped.")
 
 if __name__ == "__main__":
     main()
