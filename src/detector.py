@@ -9,10 +9,10 @@ class DriverMonitor:
         # 1. 설정값
         # ==========================================
         self.EAR_THRESHOLD = 0.25      
-        self.EAR_CONSEC_FRAMES = 15    # 졸음 반응 속도
+        self.EAR_CONSEC_FRAMES = 15    
         
         self.MAR_THRESHOLD = 0.5       
-        self.MAR_CONSEC_FRAMES = 10    # 하품 지속
+        self.MAR_CONSEC_FRAMES = 10     
         
         self.PITCH_THRESHOLD = 20.0    
         self.YAW_THRESHOLD = 30.0      
@@ -23,6 +23,9 @@ class DriverMonitor:
         self.is_calibrating = True
         self.calib_ear_list = []
         
+        # [NEW] 적응형 알고리즘 변수
+        self.normal_eye_size = 0.30 # 초기값 (나중에 캘리브레이션으로 덮어씌워짐)
+        
         # 카운터
         self.counter_ear = 0
         self.counter_mar = 0
@@ -31,9 +34,9 @@ class DriverMonitor:
         self.last_mar_val = 0.0 
 
         # ==========================================
-        # 2. 모델 로드
+        # 2. 모델 로드 (Dlib 순정)
         # ==========================================
-        print("✅ Loading Dlib Detector (Lip Correction Enhanced)...")
+        print("✅ Loading Dlib Detector (Smart Adaptive Mode)...")
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor("models/shape_predictor_68_face_landmarks.dat")
         
@@ -49,19 +52,15 @@ class DriverMonitor:
         self.camera_matrix = np.array([[640, 0, 320], [0, 640, 240], [0, 0, 1]], dtype="double")
         self.dist_coeffs = np.zeros((4,1))
 
-    # ==========================================
-    # 박스 확장 (아래쪽 25% 유지)
-    # ==========================================
     def expand_rect(self, rect, frame_shape):
         img_h, img_w = frame_shape[:2]
-        
         x = rect.left()
         y = rect.top()
         w = rect.right() - x
         h = rect.bottom() - y
         
         pad_top = int(h * 0.05)
-        pad_bottom = int(h * 0.25) # 하품 공간 확보
+        pad_bottom = int(h * 0.25) 
         pad_side = int(w * 0.15)
         
         new_x1 = max(0, x - pad_side)
@@ -107,11 +106,13 @@ class DriverMonitor:
         if len(self.calib_ear_list) >= self.CALIBRATION_FRAMES:
             self.calib_ear_list.sort()
             index_90th = int(len(self.calib_ear_list) * 0.90)
-            normal_eye = self.calib_ear_list[index_90th]
-            self.EAR_THRESHOLD = max(0.20, normal_eye * 0.85)
+            
+            # [NEW] 평소 눈 크기를 저장해둠
+            self.normal_eye_size = self.calib_ear_list[index_90th]
+            self.EAR_THRESHOLD = max(0.20, self.normal_eye_size * 0.85)
             
             self.is_calibrating = False
-            print(f"✅ Calibration Done! Normal: {normal_eye:.3f}, Threshold: {self.EAR_THRESHOLD:.3f}")
+            print(f"✅ Calibration Done! Normal: {self.normal_eye_size:.3f}, Threshold: {self.EAR_THRESHOLD:.3f}")
 
     def process_frame(self, frame, gray):
         status = "SAFE"
@@ -119,13 +120,7 @@ class DriverMonitor:
 
         if len(faces) == 0:
             self.counter_no_face += 1
-            
-            if self.last_mar_val > self.MAR_THRESHOLD:
-                self.counter_mar += 1
-                cv2.putText(frame, "!!! YAWNING (Face Lost) !!!", (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-                if status != "SLEEP": status = "YAWN"
-            
-            elif self.counter_no_face >= self.NO_FACE_THRESHOLD:
+            if self.counter_no_face >= self.NO_FACE_THRESHOLD:
                 cv2.putText(frame, "!!! FACE LOST !!!", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 return "NO_FACE"
             self.counter_ear = 0
@@ -146,6 +141,17 @@ class DriverMonitor:
                 right_pts = shape_np[self.RIGHT_EYE]
                 avg_ear = (utils.get_eye_aspect_ratio(left_pts) + utils.get_eye_aspect_ratio(right_pts)) / 2.0
 
+                # -----------------------------------------------------------
+                # [핵심 기능] 적응형 업데이트 (Smart Adaptive Update)
+                # 눈을 '확실히' 뜨고 있다면(기준값보다 큼), 평소 눈 크기 정보를 아주 천천히 업데이트함
+                # -----------------------------------------------------------
+                if avg_ear > self.EAR_THRESHOLD:
+                    # 현재 EAR을 1% 비중으로 반영하여 평소 눈 크기 갱신
+                    self.normal_eye_size = (self.normal_eye_size * 0.99) + (avg_ear * 0.01)
+                    # 기준값도 같이 갱신 (평소 눈 크기의 85% 유지)
+                    self.EAR_THRESHOLD = max(0.20, self.normal_eye_size * 0.85)
+                # -----------------------------------------------------------
+
                 cv2.drawContours(frame, [cv2.convexHull(left_pts)], -1, (0, 255, 0), 1)
                 cv2.drawContours(frame, [cv2.convexHull(right_pts)], -1, (0, 255, 0), 1)
 
@@ -157,22 +163,16 @@ class DriverMonitor:
                 else:
                     self.counter_ear = 0
 
-                # 2. 하품 (입술 보정 - 안전한 방식)
+                # 2. 하품
                 mouth_pts = shape_np[self.MOUTH]
-                
-                # (1) 계산은 원본 좌표로! (가장 정확함)
                 mar = self.get_mouth_aspect_ratio(mouth_pts)
                 self.last_mar_val = mar
                 
-                # (2) 시각화 보정: "위치 이동"은 위험하니 뺍니다!
-                # 대신 "중심점으로 모아주는(Squeeze)" 기능만 남깁니다.
+                # 입술 축소 그리기
                 mouth_center = np.mean(mouth_pts, axis=0)
-                
-                # 위아래/좌우 모두 10%씩만 살짝 모아줍니다. (제일 안전함)
-                mouth_pts_visual = (mouth_pts - mouth_center) * 0.9 + mouth_center
+                mouth_pts_visual = (mouth_pts - mouth_center) * [0.95, 0.80] + mouth_center
                 mouth_pts_visual = mouth_pts_visual.astype(np.int32)
 
-                # 화면에는 모아진 입술을 그립니다
                 cv2.drawContours(frame, [cv2.convexHull(mouth_pts_visual)], -1, (0, 255, 255), 1)
 
                 if mar > self.MAR_THRESHOLD:
@@ -190,11 +190,8 @@ class DriverMonitor:
                 proj_mat = np.hstack((rmat, tvec))
                 euler = cv2.decomposeProjectionMatrix(proj_mat)[6]
                 pitch = euler[0][0]
-                
-                try:
-                    yaw = euler[1][0]
-                except:
-                    yaw = 0
+                try: yaw = euler[1][0] 
+                except: yaw = 0
 
                 if pitch > 0: pitch -= 180
 
@@ -209,6 +206,7 @@ class DriverMonitor:
 
                 # 박스 그리기
                 cv2.rectangle(frame, (expanded_face.left(), expanded_face.top()), (expanded_face.right(), expanded_face.bottom()), (0, 255, 0), 2)
-                cv2.putText(frame, f"EAR: {avg_ear:.2f}", (expanded_face.left(), expanded_face.top()-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
+                # [정보 표시] 변하는 기준값(Thresh)을 보여줍니다
+                cv2.putText(frame, f"EAR: {avg_ear:.2f} / Thresh: {self.EAR_THRESHOLD:.3f}", (expanded_face.left(), expanded_face.top()-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
 
         return status
