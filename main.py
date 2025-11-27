@@ -5,42 +5,47 @@ import os
 from dotenv import load_dotenv
 from picamera2 import Picamera2
 
-# 우리가 만든 모듈들 불러오기
+# 모듈 불러오기
 from src.detector import FaceDetector
 from src.analyzer import DriverAnalyzer
 from src.chatbot import DriverChatbot
 
-# .env 파일에서 API 키 로드
+# .env 로드
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def main():
     # ==========================================
-    # 1. 시스템 초기화 (System Init)
+    # 1. 시스템 초기화
     # ==========================================
     print("🚀 Initializing Driver Monitor System on Raspberry Pi 5...")
     
-    detector = FaceDetector()               # 센서
-    analyzer = DriverAnalyzer()             # 두뇌
-    chatbot = DriverChatbot(OPENAI_API_KEY) # 행동
+    detector = FaceDetector()
+    analyzer = DriverAnalyzer()
+    chatbot = DriverChatbot(OPENAI_API_KEY)
     
-    # 챗봇이 '재설정'을 요청하면 analyzer를 초기화하는 함수 연결
+    # 챗봇 재설정 콜백
     def trigger_recalibration():
         print("🔄 챗봇 요청으로 재설정 시작")
         analyzer.is_calibrating = True
         analyzer.calib_ear_list = []
-        # [Step 1 추가] 입 너비 리스트도 초기화
         if hasattr(analyzer, 'calib_mouth_width_list'):
             analyzer.calib_mouth_width_list = []
 
     chatbot.set_recalibration_callback(trigger_recalibration)
 
     # ==========================================
-    # 2. 카메라 설정
+    # 2. 스레드 상태 관리 변수 (핵심)
+    # ==========================================
+    # 현재 실행 중인 스레드를 추적하여 중복 실행 방지 및 우선순위 제어
+    chat_thread = None
+    alarm_thread = None
+
+    # ==========================================
+    # 3. 카메라 설정
     # ==========================================
     print("📷 Starting Camera...")
     picam2 = Picamera2()
-    # Picamera2 설정 (색상 왜곡 방지용 기본 설정)
     config = picam2.create_preview_configuration(main={"size": (640, 480)})
     picam2.configure(config)
     picam2.start()
@@ -49,7 +54,7 @@ def main():
     print("✅ System Ready! Press 'q' to quit, 'r' to recalibrate.")
 
     # ==========================================
-    # 3. 메인 루프 (Main Loop)
+    # 4. 메인 루프
     # ==========================================
     try:
         while True:
@@ -58,32 +63,49 @@ def main():
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-            # (2) 데이터 추출 (Detector)
-            # [수정 완료] 이제 올바른 함수 이름인 detect를 호출합니다.
+            # (2) 데이터 추출
             shape, face_rect = detector.detect(frame_bgr, gray)
 
-            # (3) 상태 판단 (Analyzer)
+            # (3) 상태 판단
             if analyzer.is_calibrating:
-                # 캘리브레이션 모드: 데이터 수집 (입 너비 포함)
                 analyzer.calibrate(frame_bgr, shape, face_rect)
                 status = "CALIBRATING"
             else:
-                # 주행 모드: 졸음 감시
                 status = analyzer.process(frame_bgr, shape, face_rect)
 
-                # (4) 챗봇/비상벨 실행 (Chatbot) - 스레딩
-                if not chatbot.is_processing:
-                    # 1단계: 졸음/하품 -> 대화
-                    if status in ["DROWSY", "YAWN"]:
-                        t = threading.Thread(target=chatbot.start_conversation)
-                        t.daemon = True 
-                        t.start()
+                # =========================================================
+                # [최종 로직] 우선순위 기반 행동 제어 (Priority Control)
+                # =========================================================
+                
+                # [1순위] 위험 상황 (SLEEP, HEAD_DOWN) -> 즉시 개입
+                if status in ["SLEEP", "HEAD_DOWN"]:
+                    # 이미 비상벨이 울리고 있다면 건드리지 않음
+                    if alarm_thread and alarm_thread.is_alive():
+                        pass
+                    else:
+                        print(f"🚨 [Emergency] {status} 감지! 챗봇 중단 후 비상벨 작동!")
+                        
+                        # 1. 수다 떨던 챗봇 강제 종료 (Interrupt)
+                        chatbot.stop()
+                        
+                        # 2. 비상벨 스레드 시작
+                        alarm_thread = threading.Thread(target=chatbot.play_alarm)
+                        alarm_thread.daemon = True
+                        alarm_thread.start()
+
+                # [2순위] 경고 상황 (DROWSY, YAWN) -> 챗봇 대화
+                elif status in ["DROWSY", "YAWN"]:
+                    # 비상벨이 울리는 중이면 챗봇 실행 안 함 (비상벨이 우선)
+                    is_alarm_running = (alarm_thread and alarm_thread.is_alive())
                     
-                    # 2단계: 수면/고개 숙임 -> 비상벨
-                    elif status in ["SLEEP", "HEAD_DOWN"]:
-                        t = threading.Thread(target=chatbot.play_alarm)
-                        t.daemon = True
-                        t.start()
+                    # 이미 채팅 중이면 냅둠
+                    is_chat_running = (chat_thread and chat_thread.is_alive())
+
+                    if not is_alarm_running and not is_chat_running:
+                        print(f"⚠️ [Warning] {status} 감지 -> 챗봇 대화 시도")
+                        chat_thread = threading.Thread(target=chatbot.start_conversation)
+                        chat_thread.daemon = True
+                        chat_thread.start()
 
             # FPS 표시
             curr_time = time.time()
@@ -105,6 +127,8 @@ def main():
 
     finally:
         print("🛑 Stopping System...")
+        # 종료 시 스레드 정리
+        if chatbot: chatbot.stop()
         picam2.stop()
         cv2.destroyAllWindows()
 
