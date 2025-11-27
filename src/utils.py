@@ -38,4 +38,13 @@ def adjust_gamma(image, gamma=1.0):
     # 테이블을 이용해 이미지 전체 변환 (매우 빠름)
     return cv2.LUT(image, table)
 
+
+def get_mouth_width(mouth_points):
+    """
+    입의 왼쪽 끝(48번)과 오른쪽 끝(54번) 사이의 거리를 계산합니다.
+    mouth_points는 dlib 랜드마크 48~67번까지 잘린 배열입니다.
+    배열 내부 인덱스: 0번(48번 랜드마크), 6번(54번 랜드마크)
+    """
+    return euclidean_dist(mouth_points[0], mouth_points[6])
+
     
