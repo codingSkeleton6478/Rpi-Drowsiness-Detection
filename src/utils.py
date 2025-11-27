@@ -37,3 +37,5 @@ def adjust_gamma(image, gamma=1.0):
 
     # 테이블을 이용해 이미지 전체 변환 (매우 빠름)
     return cv2.LUT(image, table)
+
+    

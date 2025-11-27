@@ -1,38 +1,34 @@
 import cv2
 import dlib
 import numpy as np
-import src.utils as utils
 
 class FaceDetector:
     def __init__(self):
-        print("✅ [Detector] Dlib 모델 로드 중 (원본 설정)...")
+        print("✅ [Detector] Dlib 모델 로드 중 (수치 튜닝: 상하10/좌우0)...")
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor("models/shape_predictor_68_face_landmarks.dat")
-        
-        # 랜드마크 인덱스
-        self.LEFT_EYE = list(range(36, 42))
-        self.RIGHT_EYE = list(range(42, 48))
-        self.MOUTH = list(range(48, 68))
-        
-        # Head Pose용 3D 모델 좌표
-        self.model_points = np.array([
-            (0.0, 0.0, 0.0), (0.0, -330.0, -65.0), (-225.0, 170.0, -135.0),
-            (225.0, 170.0, -135.0), (-150.0, -150.0, -125.0), (150.0, -150.0, -125.0)
-        ], dtype="double")
-        
-        self.camera_matrix = np.array([[640, 0, 320], [0, 640, 240], [0, 0, 1]], dtype="double")
-        self.dist_coeffs = np.zeros((4,1))
 
     def expand_rect(self, rect, frame_shape):
+        """
+        [수치 수정됨] 
+        - Top: 10% (유지)
+        - Bottom: 10% (기존 20% -> 10%로 축소: 위아래 균형 맞춰서 눈 위치 교정)
+        - Side: 0% (기존 10% -> 0%로 제거: 입술 비대화 해결)
+        """
         img_h, img_w = frame_shape[:2]
         x = rect.left()
         y = rect.top()
-        w = rect.right() - x
-        h = rect.bottom() - y
+        w = rect.width()
+        h = rect.height()
         
-        pad_top = int(h * 0.05)
-        pad_bottom = int(h * 0.25) 
-        pad_side = int(w * 0.15)
+        # 1. 위쪽(Top): 10% (유지)
+        pad_top = int(h * 0.10)
+        
+        # 2. 아래쪽(Bottom): 10% (수정됨)
+        pad_bottom = int(h * 0.10) 
+        
+        # 3. 좌우(Side): 0% (수정됨 - 패딩 제거)
+        pad_side = int(w * 0.00)
         
         new_x1 = max(0, x - pad_side)
         new_y1 = max(0, y - pad_top)
@@ -42,19 +38,13 @@ class FaceDetector:
         return dlib.rectangle(new_x1, new_y1, new_x2, new_y2)
 
     def get_landmarks(self, gray, face):
+        """Dlib 객체를 Numpy 배열로 변환"""
         shape = self.predictor(gray, face)
         return np.array([(shape.part(i).x, shape.part(i).y) for i in range(68)], dtype="int")
 
-    def get_mouth_aspect_ratio(self, mouth):
-        A = np.linalg.norm(mouth[2] - mouth[10])
-        B = np.linalg.norm(mouth[4] - mouth[8])
-        C = np.linalg.norm(mouth[0] - mouth[6])
-        return (A + B) / (2.0 * C)
-
     def detect(self, frame, gray):
         """
-        [핵심] main.py에서 호출하는 함수 이름은 'detect' 입니다.
-        얼굴을 찾고 랜드마크(shape)와 얼굴박스(rect)를 반환합니다.
+        얼굴을 찾고 [랜드마크 좌표 배열]과 [얼굴 박스]를 반환
         """
         faces = self.detector(gray, 0)
         
@@ -63,10 +53,18 @@ class FaceDetector:
 
         # 가장 큰 얼굴 하나만 처리
         face = max(faces, key=lambda rect: rect.width() * rect.height())
+        
+        # 튜닝된 비율로 박스 확장
         expanded_face = self.expand_rect(face, frame.shape)
 
         try:
+            # 랜드마크 추출 및 Numpy 변환
             shape_np = self.get_landmarks(gray, expanded_face)
             return shape_np, expanded_face
         except:
-            return None, None
+            # 만약 확장된 박스에서 실패하면 원본 박스로 재시도 (안전장치)
+            try:
+                shape_np = self.get_landmarks(gray, face)
+                return shape_np, face
+            except:
+                return None, None
