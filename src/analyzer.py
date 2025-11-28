@@ -7,11 +7,11 @@ class DriverAnalyzer:
     def __init__(self):
         # 1. 졸음 감지 (EAR)
         self.EAR_THRESHOLD = 0.25
-        self.EAR_CONSEC_FRAMES = 60     # 기본 2초
+        self.EAR_CONSEC_FRAMES = 45     # 기본 1.5초
         
         # 2. 하품 감지 (MAR)
-        self.MAR_THRESHOLD = 0.5
-        self.MAR_CONSEC_FRAMES = 30
+        self.MAR_THRESHOLD = 0.6
+        self.MAR_CONSEC_FRAMES = 60   # 기본 2초
         
         # 3. 고개 감지
         self.PITCH_THRESHOLD = 20.0
@@ -225,8 +225,8 @@ class DriverAnalyzer:
         # 디버깅용: 현재 카운트 상태 표시
         info_text = f"Score: {total_score} | Count: {self.drowsiness_count} | Speak: {self.is_speaking}"
         cv2.putText(frame, info_text, (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        if current_status == "SAFE" or current_status == "YAWN":
+
+        if current_status == "SAFE": current_status = "YAWN"
             if total_score >= self.FATIGUE_THRESHOLD:
                 current_status = "DROWSY"
 
