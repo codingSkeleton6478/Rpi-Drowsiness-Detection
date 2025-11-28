@@ -156,13 +156,17 @@ class DriverChatbot:
         self.is_processing = True
         self.stop_signal = False
         
-        # [중요] 대화 시작 알림 -> Analyzer가 임계값을 완화함 (2초 -> 4초)
+        # [신규] 한 대화 세션 내에서 중복으로 점수가 올라가는 것을 방지하는 플래그
+        admitted_once = False 
+        
+        # [중요] 대화 시작 알림 -> Analyzer가 임계값을 완화함 (예: 2초 -> 4초)
         if self.callback_start: self.callback_start()
 
         try:
             self.messages = [{"role": "system", "content": self.system_prompt}]
             self.tts_play("운전자님! 깜빡 조신 것 같은데? 괜찮아?")
             
+            # 대화 횟수 반복 (기본 3회)
             for _ in range(3): 
                 if self.stop_signal: break
                 
@@ -182,15 +186,22 @@ class DriverChatbot:
                 
                 if self.stop_signal: break
 
-                # [결과 처리 로직]
+                # [결과 처리 로직 수정됨]
                 if "[부정]" in ai_res:
                     self.tts_play(ai_res)
                     if self.callback_result: self.callback_result("DENY")
-                    break 
+                    break # 부정은 즉시 종료 (시스템 리셋을 위해)
+                    
                 elif "[인정]" in ai_res:
                     self.tts_play(ai_res)
-                    if self.callback_result: self.callback_result("ADMIT")
-                    break
+                    
+                    # [수정] 대화를 끊지 않고(break 삭제), 플래그를 체크하여 점수는 한 번만 반영
+                    if self.callback_result and not admitted_once:
+                        self.callback_result("ADMIT")
+                        admitted_once = True 
+                    
+                    # break가 삭제되었으므로 for문이 계속 돌며 대화가 이어짐 (퀴즈 풀기 등)
+
                 elif "[종료]" in ai_res:
                     self.tts_play(ai_res)
                     break 
@@ -200,7 +211,7 @@ class DriverChatbot:
         except Exception as e:
             print(f"Chat Error: {e}")
         finally:
-            # [중요] 대화 종료 알림 -> Analyzer가 임계값을 복구함 (4초 -> 2초)
+            # [중요] 대화 종료 알림 -> Analyzer가 임계값을 복구함 (예: 4초 -> 2초)
             if self.callback_end: self.callback_end()
             self.is_processing = False
             self.stop_signal = False

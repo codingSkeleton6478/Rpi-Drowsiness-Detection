@@ -28,15 +28,15 @@ def main():
     def handle_chat_result(result_type):
         if result_type == "DENY": # "안 잤어" -> 완전 초기화
             analyzer.reset_full_calibration()
-        elif result_type == "ADMIT": # "졸려" -> 카운트 증가
+        elif result_type == "ADMIT": # "졸려" -> 카운트 증가 (경고 격상)
             analyzer.reset_soft_for_next_stage()
 
-    # (B) 대화 시작 알림 -> 말하는 모드 ON (임계값 완화)
+    # (B) 대화 시작 알림 -> 말하는 모드 ON (임계값 2배 완화)
     def start_speaking_mode():
         analyzer.is_speaking = True
         print("🗣️ [System] Conversation Start -> Threshold Relaxed (4s)")
 
-    # (C) 대화 종료 알림 -> 말하는 모드 OFF (임계값 복구)
+    # (C) 대화 종료 알림 -> 말하는 모드 OFF (임계값 정상화)
     def end_speaking_mode():
         analyzer.is_speaking = False
         print("🤐 [System] Conversation End -> Threshold Normal (2s)")
@@ -79,35 +79,37 @@ def main():
                 is_chatting = (chat_thread and chat_thread.is_alive())
                 is_alarming = (alarm_thread and alarm_thread.is_alive())
 
+                # [우선순위 1] 비상벨 작동 중이면 상태 유지
                 if is_alarming:
-                    pass # 비상벨이 울리면 무조건 유지
+                    pass 
 
+                # [우선순위 2] 챗봇 대화 중일 때
                 elif is_chatting:
-                    # [핵심] 대화 중일 때의 행동
                     if status == "SLEEP":
-                        # Case 1: 초범(Count 0)이고 대화 중 -> 봐줌 (유예)
+                        # Case 1: 초범(Count 0) -> 봐줌 (유예)
                         if analyzer.drowsiness_count == 0:
                             cv2.putText(frame_bgr, "Grace Period (Chatting)", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                         
-                        # Case 2: 재범(Count >= 1)이거나, 4초 이상(Analyzer에서 필터링됨) 감음 -> 처형
+                        # Case 2: 재범(Count >= 1) -> 처형 (챗봇 중단 후 비상벨)
                         else:
-                            print(f"🚨 [Emergency] 재범 또는 장기 수면 감지! 챗봇 중단 후 비상벨!")
-                            chatbot.stop() # 챗봇 끊고
+                            print(f"🚨 [Emergency] 재범 감지! 챗봇 중단 후 비상벨 작동!")
+                            chatbot.stop() 
                             alarm_thread = threading.Thread(target=chatbot.play_alarm)
                             alarm_thread.daemon = True
                             alarm_thread.start()
                     else:
                         cv2.putText(frame_bgr, "Chatting...", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
+                # [우선순위 3] 일반 모니터링 상태
                 else:
-                    # 대화 중 아닐 때
-                    if status in ["SLEEP", "HEAD_DOWN"]:
+                    if status == "SLEEP":
                         print(f"🚨 [Emergency] {status} 감지! 비상벨 작동!")
                         alarm_thread = threading.Thread(target=chatbot.play_alarm)
                         alarm_thread.daemon = True
                         alarm_thread.start()
 
-                    elif status in ["DROWSY", "YAWN"]:
+                    # YAWN은 챗봇 트리거에서 제외됨. 오직 DROWSY만.
+                    elif status == "DROWSY":
                         print(f"⚠️ [Warning] {status} 감지 -> 챗봇 대화 시도")
                         chat_thread = threading.Thread(target=chatbot.start_conversation)
                         chat_thread.daemon = True
