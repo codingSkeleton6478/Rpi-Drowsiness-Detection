@@ -3,6 +3,7 @@ import time
 import pygame
 import pyaudio
 import wave
+import webrtcvad  # [필수] VAD 라이브러리 추가
 from openai import OpenAI
 
 class DriverChatbot:
@@ -17,18 +18,22 @@ class DriverChatbot:
         
         self.stop_signal = False 
         
-        # 오디오 설정
-        self.CHUNK = 1024
+        # [VAD를 위한 오디오 설정 변경]
+        # webrtcvad는 16000Hz, 32000Hz, 48000Hz 만 지원 (16000 권장)
         self.FORMAT = pyaudio.paInt16
         self.CHANNELS = 1
-        self.RATE = 44100
-        self.RECORD_SECONDS = 4
+        self.RATE = 16000  
+        self.FRAME_DURATION_MS = 30  # 30ms 단위로 쪼개서 검사
+        self.CHUNK = int(self.RATE * self.FRAME_DURATION_MS / 1000) # 480 프레임
         
         self.WAVE_OUTPUT = "user_input.wav"
         self.TTS_OUTPUT = "ai_response.mp3"
         self.ALARM_FILE = "sounds/alarm.wav"
         
-        # [최종 프롬프트] 의도 파악을 위해 태그를 [부정]과 [인정]으로 분리
+        # [VAD 설정] 모드 3: 매우 둔감함 (잡음 많은 차 안 환경용)
+        self.vad = webrtcvad.Vad(3)
+
+        # [최종 프롬프트]
         self.system_prompt = """
         너는 졸음운전 방지 AI 조수야. 친구처럼 자연스러운 '반말'을 써.
         답변은 1~2문장으로 짧게 해.
@@ -98,24 +103,61 @@ class DriverChatbot:
         except Exception as e:
             print(f"TTS Error: {e}")
 
+    # [핵심 변경] VAD 방식 녹음 (말할 때만 녹음)
     def record_audio(self):
         if self.stop_signal: return False
         
         p = pyaudio.PyAudio()
         try:
             stream = p.open(format=self.FORMAT, channels=self.CHANNELS, rate=self.RATE, input=True, frames_per_buffer=self.CHUNK)
-            print("\n🎤 듣고 있습니다... (말씀하세요)")
-            frames = []
+            print("\n🎤 말씀하세요... (목소리가 들리면 녹음을 시작합니다)")
             
-            for _ in range(0, int(self.RATE / self.CHUNK * self.RECORD_SECONDS)):
+            frames = []
+            silence_duration = 0      # 침묵 지속 시간
+            has_spoken = False        # 말을 시작했는지 여부
+            
+            # 최대 10초 대기 (무한 루프 방지)
+            start_time = time.time()
+            
+            while True:
                 if self.stop_signal: break
+                if time.time() - start_time > 10: # 10초 동안 아무 말 없으면 종료
+                    break
+
                 data = stream.read(self.CHUNK, exception_on_overflow=False)
-                frames.append(data)
                 
+                # VAD로 사람 목소리인지 판별
+                is_speech = self.vad.is_speech(data, self.RATE)
+                
+                if is_speech:
+                    if not has_spoken:
+                        print("⚡ 감지됨! 녹음 시작...")
+                        has_spoken = True
+                    frames.append(data)
+                    silence_duration = 0 # 말하는 중이면 침묵 초기화
+                else:
+                    # 소리가 안 날 때
+                    if has_spoken:
+                        # 이미 말을 시작했다면 -> 문장 끝인지 간보기
+                        frames.append(data) 
+                        silence_duration += self.FRAME_DURATION_MS
+                        
+                        # 1.0초 이상 조용하면 말 끝난 것으로 간주
+                        if silence_duration > 1000: 
+                            print("✅ 녹음 완료 (문장 끝)")
+                            break
+                    else:
+                        # 아직 말 안 했으면 계속 듣기만 함
+                        pass
+
             stream.stop_stream()
             stream.close()
             
             if self.stop_signal: return False
+            
+            # 녹음된 내용이 너무 짧으면(0.5초 미만) 잡음으로 간주하고 버림
+            if len(frames) < (self.RATE / self.CHUNK * 0.5):
+                return False
 
             wf = wave.open(self.WAVE_OUTPUT, 'wb')
             wf.setnchannels(self.CHANNELS)
@@ -124,15 +166,31 @@ class DriverChatbot:
             wf.writeframes(b''.join(frames))
             wf.close()
             return True
-        except: return False
+        except Exception as e:
+            print(f"Record Error: {e}")
+            return False
         finally: p.terminate()
 
     def stt(self):
         if self.stop_signal: return None
         try:
+            if not os.path.exists(self.WAVE_OUTPUT): return None
+
             audio_file = open(self.WAVE_OUTPUT, "rb")
             transcript = self.client.audio.transcriptions.create(model="whisper-1", file=audio_file)
-            return transcript.text
+            text = transcript.text.strip()
+            
+            # [안전장치] VAD를 써도 생길 수 있는 유튜브 환각 필터링
+            hallucinations = [
+                "Thanks for watching", "MBC", "SBS", "News", "Subtitles", 
+                "구독", "좋아요", "알림 설정", "시청해", "다음 영상", "영상에서 만나요"
+            ]
+            for h in hallucinations:
+                if h.lower() in text.lower():
+                    print(f"👻 [Ghost Filter] 환각 텍스트 감지됨(무시): {text}")
+                    return None
+
+            return text
         except: return None
 
     def get_gpt_response(self, user_text):
@@ -159,7 +217,7 @@ class DriverChatbot:
         # [신규] 한 대화 세션 내에서 중복으로 점수가 올라가는 것을 방지하는 플래그
         admitted_once = False 
         
-        # [중요] 대화 시작 알림 -> Analyzer가 임계값을 완화함 (예: 2초 -> 4초)
+        # [중요] 대화 시작 알림 -> Analyzer가 임계값을 완화함 (2초 -> 4초)
         if self.callback_start: self.callback_start()
 
         try:
@@ -170,7 +228,10 @@ class DriverChatbot:
             for _ in range(3): 
                 if self.stop_signal: break
                 
-                if not self.record_audio(): break
+                # [변경] VAD 녹음 시도
+                if not self.record_audio(): 
+                    # 말을 안 했거나 잡음만 있었으면 넘어감 (break 아님)
+                    continue
                 
                 user_text = self.stt()
                 if self.stop_signal: break
@@ -178,7 +239,7 @@ class DriverChatbot:
                 print(f"🗣️ 운전자: {user_text}")
                 
                 if not user_text or len(user_text) < 1:
-                    self.tts_play("응? 다시 말해줄래?")
+                    # 환각 필터 등으로 텍스트가 없으면 다시 듣기
                     continue
 
                 ai_res = self.get_gpt_response(user_text)
@@ -186,21 +247,21 @@ class DriverChatbot:
                 
                 if self.stop_signal: break
 
-                # [결과 처리 로직 수정됨]
+                # [결과 처리 로직]
                 if "[부정]" in ai_res:
                     self.tts_play(ai_res)
                     if self.callback_result: self.callback_result("DENY")
-                    break # 부정은 즉시 종료 (시스템 리셋을 위해)
+                    break # 부정은 즉시 종료
                     
                 elif "[인정]" in ai_res:
                     self.tts_play(ai_res)
                     
-                    # [수정] 대화를 끊지 않고(break 삭제), 플래그를 체크하여 점수는 한 번만 반영
+                    # [수정] 대화를 끊지 않고, 점수는 한 번만 반영
                     if self.callback_result and not admitted_once:
                         self.callback_result("ADMIT")
                         admitted_once = True 
                     
-                    # break가 삭제되었으므로 for문이 계속 돌며 대화가 이어짐 (퀴즈 풀기 등)
+                    # break 삭제됨 -> 대화 계속 진행
 
                 elif "[종료]" in ai_res:
                     self.tts_play(ai_res)
@@ -211,7 +272,7 @@ class DriverChatbot:
         except Exception as e:
             print(f"Chat Error: {e}")
         finally:
-            # [중요] 대화 종료 알림 -> Analyzer가 임계값을 복구함 (예: 4초 -> 2초)
+            # [중요] 대화 종료 알림 -> Analyzer가 임계값을 복구함 (4초 -> 2초)
             if self.callback_end: self.callback_end()
             self.is_processing = False
             self.stop_signal = False
