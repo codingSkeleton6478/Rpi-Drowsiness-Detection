@@ -26,6 +26,9 @@ class DriverAnalyzer:
         self.PITCH_THRESHOLD = 20.0     # 고개 숙임 (Sleeping)
         self.YAW_THRESHOLD = 40.0       # 고개 돌림 (Distraction)
         self.NO_FACE_THRESHOLD = 50     # 얼굴 소실 허용 프레임 수
+        self.CALIBRATION_FRAMES = 50    # 캘리브레이션에 필요한 프레임 수
+
+        # 4. 스마트 필터 (웃음 & 상태 유지)
 
         # 4. 스마트 필터 (웃음 & 상태 유지)
         self.SMILE_RATIO = 1.3          # 평소 입 너비 대비 1.3배면 웃음으로 간주
