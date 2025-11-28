@@ -39,14 +39,17 @@ class DriverChatbot:
         답변은 1~2문장으로 짧게 해.
 
         [상태별 응답 지침 - 반드시 태그를 붙여]
-        1. 운전자가 졸음을 **부정**하거나 **대화를 원하지 않으면**: [부정] 태그를 붙여. (시스템이 초기화하고 대화 종료)
-        2. 운전자가 졸음을 **인정**하거나 **대화로 잠을 깨우는 게 필요**하면: [인정] 태그를 붙여. (시스템이 이력을 기록하고 대화 지속)
-        3. [인정] 태그를 붙인 후에는 운전자가 잠을 깨도록 **흥미로운 주제로 대화를 유도하거나 퀴즈**를 내줘.
-        4. 운전자가 '종료' 또는 '꺼줘'를 요청하면: [종료] 태그를 붙여.
+        1. 운전자가 졸음을 **부정**하거나 **대화를 원하지 않으면**: [부정] 태그를 붙여. 
+        2. 운전자가 졸음을 **인정**하거나 **대화로 잠을 깨우는 게 필요**하면: [인정] 태그를 붙여.
+        
+        [대화 유지 규칙]
+        - [인정] 태그를 쓴 경우: 퀴즈를 내거나 흥미로운 주제를 던져.
+        - **중요**: 운전자가 정답을 모르거나 틀리면, **힌트를 주고 반드시 "다시 맞춰봐!" 식의 질문으로 끝내.** (혼자 말을 끝내지 마)
+        - 운전자가 '종료' 또는 '꺼줘'를 요청하면: [종료] 태그를 붙여.
 
         [예시]
         - 유저: "나 안 잤어!" -> "그래? 알겠어. 안전 운전해! [부정]"
-        - 유저: "아 좀 졸리네..." -> "위험한데! 그럼 내가 수수께끼 하나 내줄게. [인정]"
+        - 유저: "모르겠어" -> "힌트는 시계야! 이제 알겠어? [인정]"
         """
         self.messages = [{"role": "system", "content": self.system_prompt}]
 
@@ -183,7 +186,8 @@ class DriverChatbot:
             # [안전장치] VAD를 써도 생길 수 있는 유튜브 환각 필터링
             hallucinations = [
                 "Thanks for watching", "MBC", "SBS", "News", "Subtitles", 
-                "구독", "좋아요", "알림 설정", "시청해", "다음 영상", "영상에서 만나요"
+                "구독", "좋아요", "알림 설정", "시청해", "다음 영상", "영상에서 만나요",
+                "Thank you for watching", "Please like", "Subscribe", "Notification",
             ]
             for h in hallucinations:
                 if h.lower() in text.lower():
@@ -216,7 +220,10 @@ class DriverChatbot:
         
         # [신규] 한 대화 세션 내에서 중복으로 점수가 올라가는 것을 방지하는 플래그
         admitted_once = False 
-        
+        # 연속 침묵 횟수 및 인식 실패 횟수 카운트
+        silence_error_count = 0
+        # 연속 인식 실패 횟수 카운트
+        stt_error_count = 0
         # [중요] 대화 시작 알림 -> Analyzer가 임계값을 완화함 (2초 -> 4초)
         if self.callback_start: self.callback_start()
 
@@ -224,14 +231,30 @@ class DriverChatbot:
             self.messages = [{"role": "system", "content": self.system_prompt}]
             self.tts_play("운전자님! 깜빡 조신 것 같은데? 괜찮아?")
             
-            # 대화 횟수 반복 (기본 3회)
-            for _ in range(3): 
+            # 대화 횟수 반복 (기본 10회)
+            for _ in range(10): 
                 if self.stop_signal: break
+
+                # 연속 침묵 3회 ->  종료
+                if silence_error_count >= 3:
+                    print("  연속 침묵 3회로 대화 종료")
+                    self.tts_play("조용하네... 다음에 또 이야기하자!")
+                    break
+                
+                # 연속 3회 인식 실패 -> 종료
+                if stt_error_count >= 3:
+                    print("  연속 인식 실패 3회로 대화 종료")
+                    self.tts_play("음성 인식에 문제가 있나봐. 다음에 또 이야기하자!")
+                    break
                 
                 # [변경] VAD 녹음 시도
                 if not self.record_audio(): 
-                    # 말을 안 했거나 잡음만 있었으면 넘어감 (break 아님)
+                    # 말을 안 했거나 잡음만 있었으면 silent_error_count 증가 
+                    silence_error_count += 1
                     continue
+
+                # 말을 했으면 침묵 카운트 초기화
+                silence_error_count = 0
                 
                 user_text = self.stt()
                 if self.stop_signal: break
@@ -239,9 +262,18 @@ class DriverChatbot:
                 print(f"🗣️ 운전자: {user_text}")
                 
                 if not user_text or len(user_text) < 1:
-                    # 환각 필터 등으로 텍스트가 없으면 다시 듣기
-                    continue
+                    stt_error_count += 1
+                    print("  음성 인식 실패. 다시 시도해주세요.")
 
+                    if stt_error_count < 3:
+                        self.tts_play("잘 못 알아들었어. 다시 말해줄래?")
+                        continue
+                    else:
+                        continue  # 3회 이상은 위에서 종료 처리됨
+
+                stt_error_count = 0  # 인식 성공 시 초기화
+                silence_error_count = 0  # 여기까지 오면 인식이 성공한거니 다 초기화
+                
                 ai_res = self.get_gpt_response(user_text)
                 print(f"📝 GPT: {ai_res}")
                 
