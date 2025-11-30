@@ -272,28 +272,30 @@ class DriverAnalyzer:
                 # 지속 시간이 기준치(target_frames)를 초과하면 졸음 판정
                 if self.counter_ear >= target_frames:
                     
-                    # Case 1: 첫 번째 졸음 감지 (경고 단계)
-                    if self.sleep_trigger_count == 0:
+                    if self.sleep_trigger_count == 0 and self.drowsiness_count == 0:
+                        # Case 1: 초범이고, 아직 경고 단계일 때 -> DROWSY
                         cv2.putText(frame, "!!! 1st WARNING !!!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                         
                         if self.counter_ear == target_frames:
-                            self.sleep_trigger_count += 1 # 상태 격상
+                            self.sleep_trigger_count += 1 # 내부 트리거만 격상
 
                         current_status = "DROWSY" 
                         self.last_critical_time = time.time()
                         self.last_critical_status = "DROWSY"
 
-                    # Case 2: 두 번째 이후 감지 (수면 단계 - 비상)
+                    # [재범 처리]
+                    # 재범(Count > 0)이거나, 초범이라도 이미 경고를 받은(Trigger > 0) 상태면 여기로 옵니다.
                     else:
+                        # Case 2: 재범이거나 수면 지속 시 -> SLEEP (즉시 비상벨)
                         cv2.putText(frame, "!!! SLEEP !!!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                         
                         if self.counter_ear == target_frames:
-                            self.add_fatigue_point(60, "Long Blink") # 강한 졸음 점수 +60
+                            # 점수도 강력하게 부여
+                            self.add_fatigue_point(60, "Long Blink") 
                         
                         current_status = "SLEEP"
                         self.last_critical_time = time.time()
                         self.last_critical_status = "SLEEP"
-
         else:
             # 눈을 떴을 때
             if not is_smile_mode and not is_yawning and not is_head_turned:
