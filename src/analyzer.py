@@ -36,7 +36,7 @@ class DriverAnalyzer:
         self.CRITICAL_HOLD_TIME = 3.0   # 위험 상태(졸음) 감지 시, 3초간 상태를 유지하여 UI에서 확인 가능하게 함 (Latching)
 
         # 5. 피로도 점수 시스템 (Fatigue Scoring)
-        self.SCORE_WINDOW = 180         # 최근 3분(180초) 동안 쌓인 피로도만 계산 (Sliding Window)
+        self.SCORE_WINDOW = 1800         # 최근 30분(1800초) 동안 쌓인 피로도만 계산 (Sliding Window)
         self.FATIGUE_THRESHOLD = 80     # 누적 점수가 80점을 넘으면 'DROWSY(졸음)' 상태 확정
 
         # ==========================================
