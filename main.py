@@ -9,6 +9,7 @@ from picamera2 import Picamera2
 from src.detector import FaceDetector
 from src.analyzer import DriverAnalyzer
 from src.chatbot import DriverChatbot
+from src.database import DrivingLogDB  # [신규 기능] DB 모듈 추가
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -20,6 +21,10 @@ def main():
     analyzer = DriverAnalyzer()
     chatbot = DriverChatbot(OPENAI_API_KEY)
     
+    # [신규 기능] DB 객체 초기화
+    db = DrivingLogDB()
+    last_drowsiness_count = 0  # DB 기록용 카운트 트래커
+
     # ==============================================================
     # 1. Chatbot <-> Analyzer 연결 (콜백 함수 정의)
     # ==============================================================
@@ -28,6 +33,12 @@ def main():
     def handle_chat_result(result_type):
         if result_type == "DENY": # "안 잤어" -> 완전 초기화
             analyzer.reset_full_calibration()
+            
+            # [필수 수정] Analyzer가 0이 되었으니, 여기서 기억하는 변수도 0으로 맞춰야 함
+            # 이걸 안 하면 다음 졸음 때 (1 > 1)이 False가 되어 기록이 안 남음
+            nonlocal last_drowsiness_count
+            last_drowsiness_count = 0
+            
         elif result_type == "ADMIT": # "졸려" -> 카운트 증가 (경고 격상)
             analyzer.reset_soft_for_next_stage()
 
@@ -50,6 +61,29 @@ def main():
     
     # [신규] 대화 중 수면 유예 타이머 변수 (While 문 밖에서 초기화)
     sleep_grace_start_time = None
+
+    # [신규 기능] 주기적 운전 리포트 스레드 (30분마다)
+    def periodic_report_loop():
+        while True:
+            time.sleep(1800)  # 30분 대기
+            
+            # 현재 챗봇이나 알람이 작동 중인지 확인 (방해 금지)
+            is_busy = (chat_thread is not None and chat_thread.is_alive()) or \
+                      (alarm_thread is not None and alarm_thread.is_alive())
+            
+            if not is_busy:
+                # 최근 30분간 졸음 횟수 조회
+                count = db.get_count_last_minutes(30)
+                if count > 0:
+                    msg = f"운전자님, 지난 30분 동안 졸음이 {count}번 감지되었습니다. 휴식을 취하시는 걸 권장드립니다."
+                    print(f"📊 [Report] {msg}")
+                    chatbot.tts_play(msg)
+            else:
+                print("📊 [Report] Skipped (System Busy)")
+
+    # 리포트 스레드 시작 (Daemon=True로 설정하여 메인 종료 시 자동 종료)
+    report_thread = threading.Thread(target=periodic_report_loop, daemon=True)
+    report_thread.start()
 
     print("📷 Starting Camera...")
     picam2 = Picamera2()
@@ -74,6 +108,12 @@ def main():
                 status = "CALIBRATING"
             else:
                 status = analyzer.process(frame_bgr, shape, face_rect)
+                
+                # [신규 기능] 졸음 카운트 증가 감지 시 DB 자동 기록
+                if analyzer.drowsiness_count > last_drowsiness_count:
+                    db.log_event("SLEEP")
+                    print(f"💾 [DB] 졸음 이벤트 기록됨 (Total: {analyzer.drowsiness_count})")
+                    last_drowsiness_count = analyzer.drowsiness_count
 
                 # =========================================================
                 # 2. 최종 우선순위 로직 (1초 유예 타임아웃 적용)
