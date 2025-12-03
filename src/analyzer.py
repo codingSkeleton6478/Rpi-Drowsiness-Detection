@@ -276,7 +276,7 @@ class DriverAnalyzer:
                 if self.counter_ear >= target_frames:
                     
                     # Case 1: 첫 번째 졸음 감지 (경고 단계)
-                    if self.sleep_trigger_count == 0:
+                    if self.sleep_trigger_count == 0 and self.drowsiness_count == 0:
                         cv2.putText(frame, "!!! 1st WARNING !!!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                         
                         if self.counter_ear == target_frames:
@@ -290,8 +290,9 @@ class DriverAnalyzer:
                     else:
                         cv2.putText(frame, "!!! SLEEP !!!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                         
-                        if self.counter_ear == target_frames:
-                            self.add_fatigue_point(60, "Long Blink") # 강한 졸음 점수 +60
+                        #기존에는 60점을 주기로 했으나, 점수 누적 시스템에 영향이 가서 삭제함.
+                        #if self.counter_ear == target_frames:
+                            #self.add_fatigue_point(60, "Long Blink") # 강한 졸음 점수 +60
                         
                         current_status = "SLEEP"
                         self.last_critical_time = time.time()
