@@ -19,7 +19,10 @@ class DriverAnalyzer:
         # ==========================================
         # 1. 졸음 감지 (EAR: Eye Aspect Ratio)
         self.EAR_THRESHOLD = 0.25       # 눈 감김 판단 기준 (캘리브레이션 후 개인별 수치로 갱신됨)
-        self.EAR_CONSEC_FRAMES = 60     # 졸음 판정 최소 지속 시간 (약 2초 @ 30fps)
+        
+        # [수정됨] 기존 60(2초) -> 30(1초)로 변경
+        # 이제 1초만 눈을 감아도 졸음/수면으로 판정합니다.
+        self.EAR_CONSEC_FRAMES = 30     # 졸음 판정 최소 지속 시간 (약 1초 @ 30fps)
         
         # 2. 하품 감지 (MAR: Mouth Aspect Ratio)
         self.MAR_THRESHOLD = 0.6        # 하품 판단 기준 (0.5에서 0.6으로 상향 조정하여 일반적인 입 벌림 제외)
@@ -36,7 +39,7 @@ class DriverAnalyzer:
         self.CRITICAL_HOLD_TIME = 3.0   # 위험 상태(졸음) 감지 시, 3초간 상태를 유지하여 UI에서 확인 가능하게 함 (Latching)
 
         # 5. 피로도 점수 시스템 (Fatigue Scoring)
-        self.SCORE_WINDOW = 1800         # 최근 30분(1800초) 동안 쌓인 피로도만 계산 (Sliding Window)
+        self.SCORE_WINDOW = 180         # 최근 3분(180초) 동안 쌓인 피로도만 계산 (Sliding Window)
         self.FATIGUE_THRESHOLD = 80     # 누적 점수가 80점을 넘으면 'DROWSY(졸음)' 상태 확정
 
         # ==========================================
@@ -272,30 +275,28 @@ class DriverAnalyzer:
                 # 지속 시간이 기준치(target_frames)를 초과하면 졸음 판정
                 if self.counter_ear >= target_frames:
                     
-                    if self.sleep_trigger_count == 0 and self.drowsiness_count == 0:
-                        # Case 1: 초범이고, 아직 경고 단계일 때 -> DROWSY
+                    # Case 1: 첫 번째 졸음 감지 (경고 단계)
+                    if self.sleep_trigger_count == 0:
                         cv2.putText(frame, "!!! 1st WARNING !!!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                         
                         if self.counter_ear == target_frames:
-                            self.sleep_trigger_count += 1 # 내부 트리거만 격상
+                            self.sleep_trigger_count += 1 # 상태 격상
 
                         current_status = "DROWSY" 
                         self.last_critical_time = time.time()
                         self.last_critical_status = "DROWSY"
 
-                    # [재범 처리]
-                    # 재범(Count > 0)이거나, 초범이라도 이미 경고를 받은(Trigger > 0) 상태면 여기로 옵니다.
+                    # Case 2: 두 번째 이후 감지 (수면 단계 - 비상)
                     else:
-                        # Case 2: 재범이거나 수면 지속 시 -> SLEEP (즉시 비상벨)
                         cv2.putText(frame, "!!! SLEEP !!!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                         
                         if self.counter_ear == target_frames:
-                            # 점수도 강력하게 부여
-                            self.add_fatigue_point(60, "Long Blink") 
+                            self.add_fatigue_point(60, "Long Blink") # 강한 졸음 점수 +60
                         
                         current_status = "SLEEP"
                         self.last_critical_time = time.time()
                         self.last_critical_status = "SLEEP"
+
         else:
             # 눈을 떴을 때
             if not is_smile_mode and not is_yawning and not is_head_turned:
