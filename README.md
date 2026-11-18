@@ -122,7 +122,6 @@ Rpi-Drowsiness-Detection/
 └── .env             # 직접 만들어야 함
 ```
 
-`driving_log.db`, `user_input.wav`, `ai_response.mp3`는 실행하면 생기는 파일인데 지금 저장소에 같이 올라가 있습니다. DB에는 테스트할 때 남은 기록이 들어 있어서, 그대로 받아서 실행하면 리포트에 섞일 수 있습니다.
 
 ## 실행해보기
 
@@ -226,4 +225,3 @@ python main.py
 - [Picamera2](https://github.com/raspberrypi/picamera2)
 - [Raspberry Pi 카메라 문서](https://www.raspberrypi.com/documentation/computers/camera_software.html)
 
-라이선스는 아직 정하지 않았습니다. dlib의 68 랜드마크 모델은 학습 데이터(iBUG 300-W) 라이선스가 상업적 이용을 제외하고 있어서, 상업적으로 쓰려면 따로 확인이 필요합니다.
